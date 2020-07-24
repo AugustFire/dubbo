@@ -85,6 +85,7 @@ public class ExtensionLoader<T> {
 
     private static final Pattern NAME_SEPARATOR = Pattern.compile("\\s*[,]+\\s*");
 
+    //类对应的ExtensionLoader的缓存集合
     private static final ConcurrentMap<Class<?>, ExtensionLoader<?>> EXTENSION_LOADERS = new ConcurrentHashMap<>(64);
 
     private static final ConcurrentMap<Class<?>, Object> EXTENSION_INSTANCES = new ConcurrentHashMap<>(64);
@@ -93,17 +94,26 @@ public class ExtensionLoader<T> {
 
     private final ExtensionFactory objectFactory;
 
+    //缓存的实现类的类名--对应实现class文件
     private final ConcurrentMap<Class<?>, String> cachedNames = new ConcurrentHashMap<>();
-
+    //扩展点的缓存集合
+    //eg.
+    // impl1-->SimpleExt1
+    // impl2-->SimpleExt2
+    // impl3-->SimpleExt3
     private final Holder<Map<String, Class<?>>> cachedClasses = new Holder<>();
 
     private final Map<String, Object> cachedActivates = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Holder<Object>> cachedInstances = new ConcurrentHashMap<>();
+    //自适应扩展点的缓存
     private final Holder<Object> cachedAdaptiveInstance = new Holder<>();
+    //自适应扩展类的缓存
     private volatile Class<?> cachedAdaptiveClass = null;
+    //缓存默认扩展点的名称(SPI文件中的key)
     private String cachedDefaultName;
     private volatile Throwable createAdaptiveInstanceError;
 
+    //实现类是Wrapper的扩展缓存类
     private Set<Class<?>> cachedWrapperClasses;
 
     private Map<String, IllegalStateException> exceptions = new ConcurrentHashMap<>();
@@ -118,6 +128,8 @@ public class ExtensionLoader<T> {
 
     /**
      * Load all {@link Prioritized prioritized} {@link LoadingStrategy Loading Strategies} via {@link ServiceLoader}
+     * <p>
+     * [note] 先加载load策略,并按照优先级排序
      *
      * @return non-null
      * @since 2.7.7
@@ -140,11 +152,18 @@ public class ExtensionLoader<T> {
         return asList(strategies);
     }
 
+    /**
+     * [note]
+     * 私有的构造方法.如果type不是ExtensionFactory.class那么,指定objectFactory为ExtensionFactory的自适应扩展带点
+     */
     private ExtensionLoader(Class<?> type) {
         this.type = type;
         objectFactory = (type == ExtensionFactory.class ? null : ExtensionLoader.getExtensionLoader(ExtensionFactory.class).getAdaptiveExtension());
     }
 
+    /**
+     * 检查这个类是不是被@SPI注释标记
+     */
     private static <T> boolean withExtensionAnnotation(Class<T> type) {
         return type.isAnnotationPresent(SPI.class);
     }
@@ -161,7 +180,6 @@ public class ExtensionLoader<T> {
             throw new IllegalArgumentException("Extension type (" + type +
                     ") is not an extension, because it is NOT annotated with @" + SPI.class.getSimpleName() + "!");
         }
-
         ExtensionLoader<T> loader = (ExtensionLoader<T>) EXTENSION_LOADERS.get(type);
         if (loader == null) {
             EXTENSION_LOADERS.putIfAbsent(type, new ExtensionLoader<T>(type));
@@ -571,8 +589,13 @@ public class ExtensionLoader<T> {
         }
     }
 
+    /**
+     * 获取自适应扩展点
+     * 更具url去获取要加载的扩展点(如果url中没有,则给默认的扩展点)
+     */
     @SuppressWarnings("unchecked")
     public T getAdaptiveExtension() {
+        //double checked确保单例加载
         Object instance = cachedAdaptiveInstance.get();
         if (instance == null) {
             if (createAdaptiveInstanceError != null) {
@@ -585,7 +608,9 @@ public class ExtensionLoader<T> {
                 instance = cachedAdaptiveInstance.get();
                 if (instance == null) {
                     try {
+                        //创建扩展点的实例
                         instance = createAdaptiveExtension();
+                        //加入缓存
                         cachedAdaptiveInstance.set(instance);
                     } catch (Throwable t) {
                         createAdaptiveInstanceError = t;
@@ -670,6 +695,8 @@ public class ExtensionLoader<T> {
         return getExtensionClasses().containsKey(name);
     }
 
+
+    //step -into
     private T injectExtension(T instance) {
 
         if (objectFactory == null) {
@@ -678,6 +705,7 @@ public class ExtensionLoader<T> {
 
         try {
             for (Method method : instance.getClass().getMethods()) {
+                //setXXX
                 if (!isSetter(method)) {
                     continue;
                 }
@@ -694,6 +722,8 @@ public class ExtensionLoader<T> {
 
                 try {
                     String property = getSetterProperty(method);
+                    // objectFactory -? 初始化的时候获得 ExtensionFactory
+                    // 加载需要注入的扩展
                     Object object = objectFactory.getExtension(pt, property);
                     if (object != null) {
                         method.invoke(instance, object);
@@ -752,6 +782,7 @@ public class ExtensionLoader<T> {
     }
 
     private Map<String, Class<?>> getExtensionClasses() {
+        //尝试从缓存中获取
         Map<String, Class<?>> classes = cachedClasses.get();
         if (classes == null) {
             synchronized (cachedClasses) {
@@ -767,14 +798,17 @@ public class ExtensionLoader<T> {
 
     /**
      * synchronized in getExtensionClasses
+     * 同步加载扩展类
      */
     private Map<String, Class<?>> loadExtensionClasses() {
         cacheDefaultExtensionName();
 
         Map<String, Class<?>> extensionClasses = new HashMap<>();
 
+        //使用各种加载策略到对应的目录下加载扩展类
         for (LoadingStrategy strategy : strategies) {
             loadDirectory(extensionClasses, strategy.directory(), type.getName(), strategy.preferExtensionClassLoader(), strategy.overridden(), strategy.excludedPackages());
+            //dubbo 由ali交给apache后,更改路径对应的包名
             loadDirectory(extensionClasses, strategy.directory(), type.getName().replace("org.apache", "com.alibaba"), strategy.preferExtensionClassLoader(), strategy.overridden(), strategy.excludedPackages());
         }
 
@@ -783,6 +817,7 @@ public class ExtensionLoader<T> {
 
     /**
      * extract and cache default extension name if exists
+     * 获取默认的扩展类的名字,也就是这个接口的注解@SPI(value="XXX")的value值
      */
     private void cacheDefaultExtensionName() {
         final SPI defaultAnnotation = type.getAnnotation(SPI.class);
@@ -807,6 +842,14 @@ public class ExtensionLoader<T> {
         loadDirectory(extensionClasses, dir, type, false, false);
     }
 
+    /**
+     * @param extensionClasses                存放扩展类的集合
+     * @param dir                             加载策略相对应的目录
+     * @param type                            className
+     * @param extensionLoaderClassLoaderFirst ?默认是false,暂且不管
+     * @param overridden                      是否覆盖优先级低的load
+     * @param excludedPackages                要排出的包
+     */
     private void loadDirectory(Map<String, Class<?>> extensionClasses, String dir, String type,
                                boolean extensionLoaderClassLoaderFirst, boolean overridden, String... excludedPackages) {
         String fileName = dir + type;
@@ -815,6 +858,7 @@ public class ExtensionLoader<T> {
             ClassLoader classLoader = findClassLoader();
 
             // try to load from ExtensionLoader's ClassLoader first
+            // 默认是false so -> skip
             if (extensionLoaderClassLoaderFirst) {
                 ClassLoader extensionLoaderClassLoader = ExtensionLoader.class.getClassLoader();
                 if (ClassLoader.getSystemClassLoader() != extensionLoaderClassLoader) {
@@ -833,6 +877,7 @@ public class ExtensionLoader<T> {
             if (urls != null) {
                 while (urls.hasMoreElements()) {
                     java.net.URL resourceURL = urls.nextElement();
+                    //step into
                     loadResource(extensionClasses, classLoader, resourceURL, overridden, excludedPackages);
                 }
             }
@@ -842,12 +887,15 @@ public class ExtensionLoader<T> {
         }
     }
 
+    //加载具体的URL到extensionClasses中
     private void loadResource(Map<String, Class<?>> extensionClasses, ClassLoader classLoader,
                               java.net.URL resourceURL, boolean overridden, String... excludedPackages) {
         try {
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(resourceURL.openStream(), StandardCharsets.UTF_8))) {
                 String line;
+                //按行读取
                 while ((line = reader.readLine()) != null) {
+                    //忽略注册
                     final int ci = line.indexOf('#');
                     if (ci >= 0) {
                         line = line.substring(0, ci);
@@ -858,10 +906,14 @@ public class ExtensionLoader<T> {
                             String name = null;
                             int i = line.indexOf('=');
                             if (i > 0) {
+                                //key
                                 name = line.substring(0, i).trim();
+                                //value(具体实现类的全限定名)
                                 line = line.substring(i + 1).trim();
                             }
+                            //如果不是在排出的包外
                             if (line.length() > 0 && !isExcluded(line, excludedPackages)) {
+                                //终于要加载类了...
                                 loadClass(extensionClasses, resourceURL, Class.forName(line, true, classLoader), name, overridden);
                             }
                         } catch (Throwable t) {
@@ -890,16 +942,24 @@ public class ExtensionLoader<T> {
 
     private void loadClass(Map<String, Class<?>> extensionClasses, java.net.URL resourceURL, Class<?> clazz, String name,
                            boolean overridden) throws NoSuchMethodException {
+        //判断是不是这个type的实现
         if (!type.isAssignableFrom(clazz)) {
             throw new IllegalStateException("Error occurred when loading extension class (interface: " +
                     type + ", class line: " + clazz.getName() + "), class "
                     + clazz.getName() + " is not subtype of interface.");
         }
+        //这个类上是不是被@Adaptive注解标记
         if (clazz.isAnnotationPresent(Adaptive.class)) {
+            //如果类被@Adaptive标注 -> 直接把这个类作为扩展类文件缓存起来
+            // --> cachedAdaptiveClass
             cacheAdaptiveClass(clazz, overridden);
         } else if (isWrapperClass(clazz)) {
+            //是不是个包装类?
             cacheWrapperClass(clazz);
         } else {
+            //大多数会走到这里来
+
+            //为啥忽略了返回值?这里只是做个校验,判断是否含有一个非空的构造
             clazz.getConstructor();
             if (StringUtils.isEmpty(name)) {
                 name = findAnnotationName(clazz);
@@ -907,12 +967,19 @@ public class ExtensionLoader<T> {
                     throw new IllegalStateException("No such extension name for the class " + clazz.getName() + " in the config " + resourceURL);
                 }
             }
-
+            //,分割?意思就是 可以 key1,key2=XXXImpl
             String[] names = NAME_SEPARATOR.split(name);
             if (ArrayUtils.isNotEmpty(names)) {
+
+                //缓存被@Activate 标注的实现类!
                 cacheActivateClass(clazz, names[0]);
+
                 for (String n : names) {
+
+                    //缓存类名和是实现class
                     cacheName(clazz, n);
+
+                    //放到这个集合里
                     saveInExtensionClass(extensionClasses, clazz, n, overridden);
                 }
             }
@@ -948,9 +1015,12 @@ public class ExtensionLoader<T> {
      * for compatibility, also cache class with old alibaba Activate annotation
      */
     private void cacheActivateClass(Class<?> clazz, String name) {
+        //这个实现类是不是被@Activate标注
         Activate activate = clazz.getAnnotation(Activate.class);
         if (activate != null) {
+            //如果不是空的则缓存 name和 和这个注解
             cachedActivates.put(name, activate);
+
         } else {
             // support com.alibaba.dubbo.common.extension.Activate
             com.alibaba.dubbo.common.extension.Activate oldActivate = clazz.getAnnotation(com.alibaba.dubbo.common.extension.Activate.class);
@@ -992,6 +1062,7 @@ public class ExtensionLoader<T> {
      */
     private boolean isWrapperClass(Class<?> clazz) {
         try {
+            //判断这个实现类是不是 有一个 constructor(type) 这样的构造器
             clazz.getConstructor(type);
             return true;
         } catch (NoSuchMethodException e) {
@@ -1013,27 +1084,42 @@ public class ExtensionLoader<T> {
         return name.toLowerCase();
     }
 
+    /**
+     * 创建自适应扩展点
+     */
     @SuppressWarnings("unchecked")
     private T createAdaptiveExtension() {
         try {
+            //1.创建自适应扩展点的实例并且
+            //2.injectExtension -注入扩展(实例中嵌套有需要自适应的属性?)
             return injectExtension((T) getAdaptiveExtensionClass().newInstance());
         } catch (Exception e) {
             throw new IllegalStateException("Can't create adaptive extension " + type + ", cause: " + e.getMessage(), e);
         }
     }
 
+    /**
+     * 获取自适应扩展点的class文件
+     */
     private Class<?> getAdaptiveExtensionClass() {
+        //获取扩展点的类集合,并且加入缓存
         getExtensionClasses();
         if (cachedAdaptiveClass != null) {
+            //能走到这,说明这个类被@Adaptive修饰过
             return cachedAdaptiveClass;
         }
         return cachedAdaptiveClass = createAdaptiveExtensionClass();
     }
 
+    /**
+     * 这里要动态创建自适应扩展点的类文件
+     */
     private Class<?> createAdaptiveExtensionClass() {
+        //字符串拼接成一个类?666啊
         String code = new AdaptiveClassCodeGenerator(type, cachedDefaultName).generate();
         ClassLoader classLoader = findClassLoader();
         org.apache.dubbo.common.compiler.Compiler compiler = ExtensionLoader.getExtensionLoader(org.apache.dubbo.common.compiler.Compiler.class).getAdaptiveExtension();
+        //默认 javaassist
         return compiler.compile(code, classLoader);
     }
 

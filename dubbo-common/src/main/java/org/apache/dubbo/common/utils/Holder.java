@@ -21,6 +21,8 @@ package org.apache.dubbo.common.utils;
  */
 public class Holder<T> {
 
+    //保存内存可见性(禁止部分cpu重排序)
+    //方便后续double check 保证单例
     private volatile T value;
 
     public void set(T value) {
