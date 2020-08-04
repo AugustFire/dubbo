@@ -46,6 +46,10 @@ public class DubboBootstrapApplicationListener extends OneTimeExecutionApplicati
         this.dubboBootstrap = DubboBootstrap.getInstance();
     }
 
+    /**
+     * 监听容器刷新时间 -> 服务导出
+     * @param event {@link ApplicationContextEvent}
+     */
     @Override
     public void onApplicationContextEvent(ApplicationContextEvent event) {
         if (event instanceof ContextRefreshedEvent) {
@@ -55,6 +59,10 @@ public class DubboBootstrapApplicationListener extends OneTimeExecutionApplicati
         }
     }
 
+    /**
+     * 服务导出
+     * @param event
+     */
     private void onContextRefreshedEvent(ContextRefreshedEvent event) {
         dubboBootstrap.start();
     }

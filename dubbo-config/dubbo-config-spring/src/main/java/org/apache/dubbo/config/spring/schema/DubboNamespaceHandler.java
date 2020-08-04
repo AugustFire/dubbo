@@ -42,6 +42,7 @@ import org.w3c.dom.Element;
 import static org.apache.dubbo.config.spring.util.DubboBeanUtils.registerCommonBeans;
 
 /**
+ * spring解析dubbo的标签
  * DubboNamespaceHandler
  *
  * @export
@@ -52,6 +53,10 @@ public class DubboNamespaceHandler extends NamespaceHandlerSupport implements Co
         Version.checkDuplicate(DubboNamespaceHandler.class);
     }
 
+
+    /**
+     * 注册bean解析器
+     */
     @Override
     public void init() {
         registerBeanDefinitionParser("application", new DubboBeanDefinitionParser(ApplicationConfig.class, true));
